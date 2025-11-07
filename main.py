@@ -63,20 +63,20 @@ mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
 # ===== Tham số cơ bản =====
-STABLE_SECONDS = 0.5  # tối thiểu để coi là đã "giữ" một từ
+STABLE_SECONDS = 0.5
 DEFAULT_SKIP_LABELS = {
     "binh_thuong", "bình_thường", "binh thuong", "bình thường", "ngồi yên", "ngoi yen", ""
 }
 
-# === [SENTENCE TIMING MODE] === ngưỡng thời gian
-WORD_MIN_SEC = 0.5          # từ hợp lệ nếu giữ tối thiểu 0.5s
-WORD_MAX_SEC = 2.0          # nếu giữ > 2s thì chốt 1 lần
-SILENCE_FINALIZE_SEC = 3.0  # im lặng 3s -> chốt câu
+# === [SENTENCE TIMING MODE] ===
+WORD_MIN_SEC = 0.5
+WORD_MAX_SEC = 2.0
+SILENCE_FINALIZE_SEC = 3.0
 
 # === CHỐNG LẶP TỪ ===
-SAME_WORD_COOLDOWN_SEC = 1.2      # không cho chốt lại cùng 1 từ trong ~1.2s
-MAX_CONSECUTIVE_DUP_COMPRESS = 3  # nén tối đa 3 từ trùng liên tiếp khi finalize
-REENTRY_GAP_DEFAULT_SEC = 0.3     # phải rời từ cũ ít nhất 0.3s mới được chốt lại
+SAME_WORD_COOLDOWN_SEC = 1.2
+MAX_CONSECUTIVE_DUP_COMPRESS = 3
+REENTRY_GAP_DEFAULT_SEC = 0.3
 
 # ================== An toàn cho feature extraction ==================
 def safe_extract_features(mp_hands, face_results, hand_results):
@@ -93,7 +93,6 @@ def safe_extract_features(mp_hands, face_results, hand_results):
 
 # ================== Từ điển & ghép câu ==================
 LEXICON = {
-    # mở rộng theo bộ nhãn của bạn
     "xin_chao": "xin chào",
     "hello": "xin chào",
     "toi": "tôi",
@@ -102,7 +101,6 @@ LEXICON = {
     "xin_loi": "xin lỗi",
     "toi_la": "tôi là",
 }
-
 PUNCT_TOKENS = {".", ",", "?", "!"}
 
 def normalize_token(label: str) -> str:
@@ -133,11 +131,6 @@ def detok_vietnamese(tokens):
 
 # ================== Majority vote smoother ==================
 class MajoritySmoother:
-    """
-    Bộ lọc số đông trượt:
-    - Lưu lại N nhãn gần nhất
-    - Trả về nhãn xuất hiện nhiều nhất (ưu tiên nhãn mới nhất khi hoà)
-    """
     def __init__(self, window_size=7):
         self.win = deque(maxlen=max(3, int(window_size)))
 
@@ -158,14 +151,6 @@ class MajoritySmoother:
 
 # ================== Gom từ theo thời gian + chống lặp ==================
 class PhraseAssemblerTiming:
-    """
-    Gom từ theo 'thời gian giữ nhãn' + CHỐNG LẶP:
-    - Chốt từ khi hold ∈ [WORD_MIN_SEC, WORD_MAX_SEC].
-    - Nếu hold > WORD_MAX_SEC -> chốt đúng 1 lần/đợt giữ.
-    - SAME_WORD_COOLDOWN_SEC: chống lặp trong thời gian ngắn.
-    - REENTRY_GAP_SEC: phải rời từ cũ >= gap trước khi cho chốt lại đúng từ đó.
-    - Im lặng ≥ SILENCE_FINALIZE_SEC -> finalize câu.
-    """
     def __init__(self, skip_labels=None, reentry_gap_sec=REENTRY_GAP_DEFAULT_SEC):
         self.tokens = []
         self.skip = set(skip_labels or [])
@@ -173,7 +158,7 @@ class PhraseAssemblerTiming:
         self.last_commit_time = 0.0
         self.last_commit_label = None
         self.reentry_gap_sec = float(reentry_gap_sec)
-        self.last_leave_ts = {}  # thời điểm "rời" từng label
+        self.last_leave_ts = {}
 
     def reset_hold_flag(self):
         self._hold_committed = False
@@ -185,10 +170,8 @@ class PhraseAssemblerTiming:
     def _can_commit(self, label: str, now_ts: float) -> bool:
         if not label or (label in self.skip):
             return False
-        # cooldown cùng từ
         if (self.last_commit_label == label) and ((now_ts - self.last_commit_time) < SAME_WORD_COOLDOWN_SEC):
             return False
-        # re-entry gap
         last_leave = self.last_leave_ts.get(label, None)
         if last_leave is not None and (now_ts - last_leave) < self.reentry_gap_sec:
             return False
@@ -219,7 +202,6 @@ class PhraseAssemblerTiming:
     def _compress_tail_duplicates(self):
         if not self.tokens:
             return
-        # Nén chuỗi dài ... t t t -> giữ 1 ở đuôi
         while len(self.tokens) >= 2 and self.tokens[-1] == self.tokens[-2]:
             self.tokens.pop()
 
@@ -238,13 +220,12 @@ class PhraseAssemblerTiming:
     def partial_text(self):
         return detok_vietnamese(self.tokens)
 
-# ================== [SPELLING MODE] Đánh vần: chữ + dấu thanh ==================
+# ================== [SPELLING MODE] ==================
 LABEL_TO_LETTER = {
     **{chr(o): chr(o) for o in range(ord('a'), ord('z')+1)},
     **{chr(o): chr(o) for o in range(ord('A'), ord('Z')+1)},
     "đ": "đ", "Đ": "Đ",
 }
-
 LABEL_TO_TONE = {
     "dau_sac": "sac",
     "dau_huyen": "huyen",
@@ -253,7 +234,6 @@ LABEL_TO_TONE = {
     "dau_nang": "nang",
     "dau_ngang": "ngang",
 }
-
 TONE_MAP = {
     "a": {"sac":"á","huyen":"à","hoi":"ả","nga":"ã","nang":"ạ","ngang":"a"},
     "ă":{"sac":"ắ","huyen":"ằ","hoi":"ẳ","nga":"ẵ","nang":"ặ","ngang":"ă"},
@@ -292,12 +272,6 @@ def apply_tone_to_word(base_word: str, tone: str) -> str:
     return base_word[:candidate_idx] + rep + base_word[candidate_idx+1:]
 
 class Speller:
-    """
-    Gom chữ cái (A..Z/đ) + 1 dấu thanh -> âm tiết tiếng Việt.
-    Điều khiển:
-      - 'xoa' / 'backspace' để xoá 1 ký tự
-      - finalize: khi im lặng ≥ 3s (xử lý ở vòng lặp)
-    """
     def __init__(self):
         self.letters = []
         self.pending_tone = "ngang"
@@ -358,6 +332,17 @@ if __name__ == "__main__":
     SMOOTH_WINDOW = st.sidebar.slider("Cửa sổ majority (frame)", min_value=3, max_value=15, value=7, step=2)
     REENTRY_GAP_SEC = st.sidebar.slider("Khoảng rời từ cũ (re-entry gap, giây)", min_value=0.0, max_value=1.0, value=REENTRY_GAP_DEFAULT_SEC, step=0.05)
 
+    # === Unknown theo ngưỡng → map về nhãn skip ===
+    UNKNOWN_THRESHOLD = st.sidebar.slider(
+        "🔒 Ngưỡng Unknown (max proba < ngưỡng → coi như 'ngồi yên')",
+        min_value=0.0, max_value=1.0, value=0.60, step=0.01
+    )
+    UNKNOWN_LABEL = st.sidebar.selectbox(
+        "🏷️ Nhãn dùng cho Unknown",
+        options=["binh_thuong", "bình_thường", "ngồi yên"],
+        index=0
+    )
+
     # === Chọn model .pkl + confidence + camera ===
     models_dir = Path("models")
     models_dir.mkdir(exist_ok=True)
@@ -395,7 +380,7 @@ if __name__ == "__main__":
         video_placeholder = st.empty()
     with col2:
         prediction_placeholder = st.empty()
-        sentence_placeholder = st.empty()  # hiển thị câu/âm tiết tạm thời
+        sentence_placeholder = st.empty()
 
     if "audio_sig" not in st.session_state:
         st.session_state.audio_sig = 0
@@ -443,7 +428,6 @@ if __name__ == "__main__":
     # Trạng thái nhãn ổn định
     current_label = None
     current_since = 0.0
-    last_spoken = None
 
     # FPS
     prev_ts = time.time()
@@ -471,10 +455,19 @@ if __name__ == "__main__":
 
         feature = safe_extract_features(mp_hands, face_results, hand_results)
 
-        # Lấy nhãn dự đoán (từ wrapper ASLClassificationModel)
+        # ===== Dự đoán với Unknown theo ngưỡng =====
+        expression = None
         if feature is not None:
             try:
-                expression = model.predict(feature)  # kỳ vọng trả về string label
+                if hasattr(model, "predict_proba"):
+                    probs = model.predict_proba([feature])[0]
+                    pred_idx = int(np.argmax(probs))
+                    pred_conf = float(probs[pred_idx])
+                    classes = getattr(model, "classes_", None)
+                    pred_label = classes[pred_idx] if classes is not None else str(pred_idx)
+                    expression = UNKNOWN_LABEL if pred_conf < UNKNOWN_THRESHOLD else pred_label
+                else:
+                    expression = model.predict(feature)
             except Exception:
                 expression = None
         else:
@@ -516,21 +509,18 @@ if __name__ == "__main__":
                     st.session_state.audio_sig += 1
                     play_audio_autoplay(audio_bytes, mime, sig=str(st.session_state.audio_sig))
 
-        # ======= FIX BUG: Dùng prev_label để commit & TTS từ =======
-        prev_label = current_label  # <--- GIỮ NHÃN CŨ
+        # ======= Dùng prev_label để commit & TTS từ =======
+        prev_label = current_label
         if norm_label != (current_label or ""):
             hold_sec = (now - current_since) if current_since else 0.0
 
             if ENABLE_AUTO_SENTENCE and prev_label and (prev_label not in DEFAULT_SKIP_LABELS):
                 if ENABLE_SPELLING_MODE:
-                    # Đánh vần: gửi nhãn ổn định vào speller (không commit vào câu ngay)
                     speller.feed_label(prev_label)
                     committed = False
                 else:
-                    # Dịch từ rời: chốt từ theo thời gian giữ nhãn cũ
                     committed = phrase_timing.commit_word_if_valid(prev_label, hold_sec, now)
 
-                # đánh dấu "rời" nhãn cũ & reset overflow flag
                 phrase_timing.mark_leave(prev_label, now)
                 phrase_timing.reset_hold_flag()
             else:
@@ -538,11 +528,10 @@ if __name__ == "__main__":
                 if prev_label:
                     phrase_timing.mark_leave(prev_label, now)
 
-            # chuyển sang nhãn mới
             current_label = norm_label
             current_since = now
 
-            # (tuỳ chọn) đọc từng từ nếu bật và có commit -> phải đọc prev_label (từ vừa chốt)
+            # Đọc từ vừa chốt (nếu bật)
             if TTS_WORD_MODE and committed:
                 word_text = normalize_token(prev_label)
                 audio_bytes, mime = tts_bytes_edge(word_text)
@@ -555,13 +544,10 @@ if __name__ == "__main__":
         if ENABLE_AUTO_SENTENCE:
             if not ENABLE_SPELLING_MODE:
                 phrase_timing.commit_on_overflow(current_label, elapsed, now)
-            # Spelling mode: không overflow-commit để tránh lặp chữ
 
             # Nếu im lặng đủ lâu -> finalize
             if st.session_state.silence_since is not None:
                 silence_sec = now - st.session_state.silence_since
-
-                # Spelling: chốt âm tiết trước khi chốt câu
                 if ENABLE_SPELLING_MODE:
                     word = speller.finalize()
                     if word:
@@ -591,7 +577,7 @@ if __name__ == "__main__":
                     unsafe_allow_html=True
                 )
 
-        # ===== (Tuỳ chọn) hiển thị xác suất lớp nếu model hỗ trợ predict_proba =====
+        # (Tuỳ chọn) hiển thị xác suất lớp
         if proba_chart and feature is not None and hasattr(model, "predict_proba"):
             try:
                 classes = getattr(model, "classes_", None)
@@ -610,7 +596,7 @@ if __name__ == "__main__":
                 mp_drawing.draw_landmarks(
                     image=image,
                     landmark_list=face_landmarks,
-                    connections=mp_face_mesh.FACEMESH_TESSELATION,
+                    connections=mp.solutions.face_mesh.FACEMESH_TESSELATION,
                     landmark_drawing_spec=None,
                     connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
                 )
@@ -619,12 +605,12 @@ if __name__ == "__main__":
                 mp_drawing.draw_landmarks(
                     image=image,
                     landmark_list=hand_landmarks,
-                    connections=mp_hands.HAND_CONNECTIONS,
+                    connections=mp.solutions.hands.HAND_CONNECTIONS,
                     landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2),
                     connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2)
                 )
 
-        # Hiển thị video + nhãn hiện tại (đã smoothing nếu bật)
+        # Hiển thị video + nhãn hiện tại
         video_placeholder.image(image, channels="RGB", use_column_width=True)
         debug = f"(hold {elapsed:.2f}s) smoothing:{'on' if smoother else 'off'} re-gap:{REENTRY_GAP_SEC:.2f}s spelling:{'on' if ENABLE_SPELLING_MODE else 'off'}"
         prediction_placeholder.markdown(
