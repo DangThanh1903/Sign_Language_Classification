@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 import warnings
 import numpy as np
 from collections import Counter, deque
+from pathlib import Path
 
 from utils.feature_extraction import *
 from utils.strings import *
@@ -357,6 +358,38 @@ if __name__ == "__main__":
     SMOOTH_WINDOW = st.sidebar.slider("Cửa sổ majority (frame)", min_value=3, max_value=15, value=7, step=2)
     REENTRY_GAP_SEC = st.sidebar.slider("Khoảng rời từ cũ (re-entry gap, giây)", min_value=0.0, max_value=1.0, value=REENTRY_GAP_DEFAULT_SEC, step=0.05)
 
+    # === Chọn model .pkl + confidence + camera ===
+    models_dir = Path("models")
+    models_dir.mkdir(exist_ok=True)
+    available_models = sorted([p.name for p in models_dir.glob("*.pkl")])
+    default_model_name = MODEL_NAME if MODEL_NAME in available_models else (available_models[0] if available_models else "<không có model>")
+
+    selected_model = st.sidebar.selectbox(
+        "📦 Chọn mô hình (.pkl) trong /models",
+        options=available_models if available_models else ["<không có model>"],
+        index=available_models.index(default_model_name) if available_models and default_model_name in available_models else 0
+    )
+
+    side_conf = st.sidebar.slider(
+        "🎯 Độ tự tin MediaPipe (min_detection/tracking_confidence)",
+        min_value=0.1, max_value=0.9, value=float(MODEL_CONFIDENCE), step=0.05
+    )
+
+    cam_index = st.sidebar.number_input("📷 Camera index", min_value=0, value=0, step=1)
+    show_fps = st.sidebar.toggle("⏱️ Hiển thị FPS", value=True)
+    proba_chart = st.sidebar.toggle("📊 Hiển thị xác suất lớp (nếu model hỗ trợ)", value=False)
+
+    # Quick actions
+    if st.sidebar.button("🧹 Reset câu tạm"):
+        st.session_state["reset_phrase_tokens"] = True
+    else:
+        st.session_state["reset_phrase_tokens"] = False
+
+    if st.sidebar.button("🔊 Đọc câu tạm"):
+        st.session_state["speak_partial"] = True
+    else:
+        st.session_state["speak_partial"] = False
+
     col1, col2 = st.columns([4, 2])
     with col1:
         video_placeholder = st.empty()
@@ -369,7 +402,7 @@ if __name__ == "__main__":
     if "silence_since" not in st.session_state:
         st.session_state.silence_since = None
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(int(cam_index))
 
     expression_handler = ExpressionHandler()
 
@@ -379,21 +412,28 @@ if __name__ == "__main__":
     speller = Speller()
 
     print("Initialising model ...")
-    model = ASLClassificationModel.load_model(f"models/{MODEL_NAME}")
+    if selected_model == "<không có model>":
+        st.error("Chưa có mô hình trong thư mục /models. Hãy đặt file .pkl vào đó (ví dụ từ train.py).")
+        st.stop()
+    try:
+        model = ASLClassificationModel.load_model(models_dir / selected_model)
+    except Exception as e:
+        st.exception(e)
+        st.stop()
 
     # MediaPipe modules
     mp_face_mesh = mp.solutions.face_mesh
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
         refine_landmarks=True,
-        min_detection_confidence=MODEL_CONFIDENCE,
-        min_tracking_confidence=MODEL_CONFIDENCE
+        min_detection_confidence=side_conf,
+        min_tracking_confidence=side_conf
     )
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         max_num_hands=2,
-        min_detection_confidence=MODEL_CONFIDENCE,
-        min_tracking_confidence=MODEL_CONFIDENCE
+        min_detection_confidence=side_conf,
+        min_tracking_confidence=side_conf
     )
     mp_drawing = mp.solutions.drawing_utils
     drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
@@ -405,11 +445,23 @@ if __name__ == "__main__":
     current_since = 0.0
     last_spoken = None
 
+    # FPS
+    prev_ts = time.time()
+    fps_placeholder = st.sidebar.empty()
+
     while cap.isOpened():
         ok, image = cap.read()
         if not ok:
             print("Ignoring empty camera frame.")
             continue
+
+        # FPS
+        if show_fps:
+            now_ts_fps = time.time()
+            dt = now_ts_fps - prev_ts
+            prev_ts = now_ts_fps
+            fps = 1.0 / dt if dt > 0 else 0.0
+            fps_placeholder.markdown(f"**FPS:** {fps:.1f}")
 
         image.flags.writeable = False
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -419,9 +471,10 @@ if __name__ == "__main__":
 
         feature = safe_extract_features(mp_hands, face_results, hand_results)
 
+        # Lấy nhãn dự đoán (từ wrapper ASLClassificationModel)
         if feature is not None:
             try:
-                expression = model.predict(feature)
+                expression = model.predict(feature)  # kỳ vọng trả về string label
             except Exception:
                 expression = None
         else:
@@ -450,34 +503,48 @@ if __name__ == "__main__":
         else:
             st.session_state.silence_since = None
 
-        # Khi nhãn thay đổi -> xét khoảng thời gian giữ nhãn cũ
+        # Cho phép reset câu tạm
+        if st.session_state.get("reset_phrase_tokens", False):
+            phrase_timing.tokens.clear()
+
+        # Phát lại câu tạm
+        if st.session_state.get("speak_partial", False):
+            text = phrase_timing.partial_text()
+            if text:
+                audio_bytes, mime = tts_bytes_edge(text)
+                if audio_bytes:
+                    st.session_state.audio_sig += 1
+                    play_audio_autoplay(audio_bytes, mime, sig=str(st.session_state.audio_sig))
+
+        # ======= FIX BUG: Dùng prev_label để commit & TTS từ =======
+        prev_label = current_label  # <--- GIỮ NHÃN CŨ
         if norm_label != (current_label or ""):
             hold_sec = (now - current_since) if current_since else 0.0
 
-            if ENABLE_AUTO_SENTENCE and current_label and (current_label not in DEFAULT_SKIP_LABELS):
+            if ENABLE_AUTO_SENTENCE and prev_label and (prev_label not in DEFAULT_SKIP_LABELS):
                 if ENABLE_SPELLING_MODE:
                     # Đánh vần: gửi nhãn ổn định vào speller (không commit vào câu ngay)
-                    speller.feed_label(current_label)
+                    speller.feed_label(prev_label)
                     committed = False
                 else:
                     # Dịch từ rời: chốt từ theo thời gian giữ nhãn cũ
-                    committed = phrase_timing.commit_word_if_valid(current_label, hold_sec, now)
+                    committed = phrase_timing.commit_word_if_valid(prev_label, hold_sec, now)
 
                 # đánh dấu "rời" nhãn cũ & reset overflow flag
-                phrase_timing.mark_leave(current_label, now)
+                phrase_timing.mark_leave(prev_label, now)
                 phrase_timing.reset_hold_flag()
             else:
                 committed = False
-                if current_label:
-                    phrase_timing.mark_leave(current_label, now)
+                if prev_label:
+                    phrase_timing.mark_leave(prev_label, now)
 
             # chuyển sang nhãn mới
             current_label = norm_label
             current_since = now
 
-            # (tuỳ chọn) đọc từng từ nếu bật và có commit (chỉ áp dụng khi không ở spelling mode)
+            # (tuỳ chọn) đọc từng từ nếu bật và có commit -> phải đọc prev_label (từ vừa chốt)
             if TTS_WORD_MODE and committed:
-                word_text = normalize_token(current_label)
+                word_text = normalize_token(prev_label)
                 audio_bytes, mime = tts_bytes_edge(word_text)
                 if audio_bytes:
                     st.session_state.audio_sig += 1
@@ -524,8 +591,21 @@ if __name__ == "__main__":
                     unsafe_allow_html=True
                 )
 
+        # ===== (Tuỳ chọn) hiển thị xác suất lớp nếu model hỗ trợ predict_proba =====
+        if proba_chart and feature is not None and hasattr(model, "predict_proba"):
+            try:
+                classes = getattr(model, "classes_", None)
+                probs = model.predict_proba([feature])[0]
+                if classes is None:
+                    classes = [f"class_{i}" for i in range(len(probs))]
+                order = np.argsort(probs)[::-1][:5]
+                top = [(classes[i], float(probs[i])) for i in order]
+                st.sidebar.write({k: v for k, v in top})
+            except Exception:
+                pass
+
         # Vẽ landmarks
-        if face_results.multi_face_landmarks:
+        if face_results and getattr(face_results, "multi_face_landmarks", None):
             for face_landmarks in face_results.multi_face_landmarks:
                 mp_drawing.draw_landmarks(
                     image=image,
@@ -534,7 +614,7 @@ if __name__ == "__main__":
                     landmark_drawing_spec=None,
                     connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
                 )
-        if hand_results.multi_hand_landmarks:
+        if hand_results and getattr(hand_results, "multi_hand_landmarks", None):
             for hand_landmarks in hand_results.multi_hand_landmarks:
                 mp_drawing.draw_landmarks(
                     image=image,
@@ -548,7 +628,7 @@ if __name__ == "__main__":
         video_placeholder.image(image, channels="RGB", use_column_width=True)
         debug = f"(hold {elapsed:.2f}s) smoothing:{'on' if smoother else 'off'} re-gap:{REENTRY_GAP_SEC:.2f}s spelling:{'on' if ENABLE_SPELLING_MODE else 'off'}"
         prediction_placeholder.markdown(
-            f'''<h2 class="big-font">{norm_label}</h2><p class="small">{debug}</p>''',
+            f'''<h2 class="big-font">{current_label or ''}</h2><p class="small">{debug}</p>''',
             unsafe_allow_html=True
         )
 
