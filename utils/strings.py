@@ -4,6 +4,8 @@ class ExpressionHandler:
     MAPPING = {
         "bình_thường": "Ngồi yên",
         "xin_chao": "Chào",
+        "xin_chao_1": "Chào",
+        "xin_chao_2": "Chào",
         "Toi" : "Tôi",
         "Ten" : "Tên"
     }
