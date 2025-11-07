@@ -339,7 +339,7 @@ if __name__ == "__main__":
     )
     UNKNOWN_LABEL = st.sidebar.selectbox(
         "🏷️ Nhãn dùng cho Unknown",
-        options=["binh_thuong", "bình_thường", "ngồi yên"],
+        options=["bình_thường", "ngồi yên"],
         index=0
     )
 
