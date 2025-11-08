@@ -7,7 +7,10 @@ class ExpressionHandler:
         "xin_chao_1": "Chào",
         "xin_chao_2": "Chào",
         "Toi" : "Tôi",
-        "Ten" : "Tên"
+        "Ten" : "Tên",
+        "^" : "^",
+        "O": "O",
+        "C": "C",
     }
 
     def __init__(self):

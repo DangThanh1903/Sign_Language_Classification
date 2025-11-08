@@ -1,109 +1,94 @@
 import numpy as np
 from config import *
 
+def extract_single_hand(mp_hands, hand_landmarks):
+    # 21 landmark, lấy (x, y) chuẩn hoá theo ảnh (MediaPipe đã chuẩn hoá 0..1)
+    arr = np.zeros((21, 2), dtype=float)
+
+    def get_xy(lm):
+        if lm is None:
+            return np.array([0.0, 0.0])
+        return np.array([lm.x, lm.y], dtype=float)
+
+    arr[0]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.WRIST])
+    arr[1]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_CMC])
+    arr[2]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_MCP])
+    arr[3]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP])
+    arr[4]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP])
+    arr[5]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP])
+    arr[6]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_PIP])
+    arr[7]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_DIP])
+    arr[8]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP])
+    arr[9]  = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP])
+    arr[10] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_PIP])
+    arr[11] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_DIP])
+    arr[12] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP])
+    arr[13] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_MCP])
+    arr[14] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_PIP])
+    arr[15] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_DIP])
+    arr[16] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP])
+    arr[17] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_MCP])
+    arr[18] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_PIP])
+    arr[19] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_DIP])
+    arr[20] = get_xy(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP])
+    return arr
 
 def extract_hand_result(mp_hands, hand_results):
     """
-    Extract features from hand result
-    :param mp_hands from mediapipe
-    :param hand_results from media_pipe
-    :return: features
+    Trả về vector tay: [Left(21x2), Right(21x2)] → flatten (84)
+    Nếu không có tay → zeros(84)
+    Nếu 1 tay → đúng vị trí (left/right) + zeros cho tay còn lại.
     """
-    # If multi-hand landmark is None -> Return zeros vector
-    if hand_results.multi_hand_landmarks is None:
-        # 21 x 2 zero array for each hand -> 21 x 4 zero array for two hands
-        return np.zeros(FEATURES_PER_HAND * 4)
+    if hand_results is None or getattr(hand_results, "multi_hand_landmarks", None) is None:
+        return np.zeros(FEATURES_PER_HAND * 4, dtype=float)  # 84
 
-    # Get the number of hands
-    num_hands = len(hand_results.multi_hand_landmarks)
-    handedness = hand_results.multi_handedness
+    hands_lm = hand_results.multi_hand_landmarks
+    handed = getattr(hand_results, "multi_handedness", None)
 
-    # Handle handedness
-    if num_hands == 1:
-        # Check which hand
-        hand_array = extract_single_hand(mp_hands, hand_results.multi_hand_landmarks[0])
-        if handedness[0].classification[0].label == "Right":
-            return np.hstack((hand_array.flatten(), np.zeros(FEATURES_PER_HAND * 2)))
-        else:
-            return np.hstack((np.zeros(FEATURES_PER_HAND * 2), hand_array.flatten()))
+    # Không tin thứ tự hands_lm; map theo handedness để tránh nhầm
+    left_arr = np.zeros((FEATURES_PER_HAND, 2), dtype=float)
+    right_arr = np.zeros((FEATURES_PER_HAND, 2), dtype=float)
+
+    if handed is None:
+        # fallback: nếu không có thông tin trái/phải → đặt vào left, right=0
+        h0 = extract_single_hand(mp_hands, hands_lm[0])
+        left_arr = h0
     else:
-        # Get the left and right hand
-        if handedness[0].classification[0].label == "Right":
-            left_hand = hand_results.multi_hand_landmarks[0]
-            right_hand = hand_results.multi_hand_landmarks[1]
-        else:
-            left_hand = hand_results.multi_hand_landmarks[1]
-            right_hand = hand_results.multi_hand_landmarks[0]
+        for lm, hd in zip(hands_lm, handed):
+            label = hd.classification[0].label  # "Left" hoặc "Right"
+            if label == "Left":
+                left_arr = extract_single_hand(mp_hands, lm)
+            elif label == "Right":
+                right_arr = extract_single_hand(mp_hands, lm)
 
-        # Get left and right hand
-        left_hand_array = extract_single_hand(mp_hands, left_hand)
-        right_hand_array = extract_single_hand(mp_hands, right_hand)
-
-        return np.hstack((left_hand_array, right_hand_array)).flatten()
-
-
-def extract_single_hand(mp_hands, hand_landmarks):
-    # Create a 2D NumPy array to store the landmarks
-    landmarks_array = np.zeros((21, 2))
-
-    # Function to safely get landmark coordinates
-    def get_landmark(landmark):
-        if landmark is None:
-            return np.array([0.0, 0.0])
-        return np.array([landmark.x, landmark.y])
-
-    # Extract each landmark individually
-    landmarks_array[0] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.WRIST])
-    landmarks_array[1] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_CMC])
-    landmarks_array[2] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_MCP])
-    landmarks_array[3] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP])
-    landmarks_array[4] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP])
-    landmarks_array[5] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP])
-    landmarks_array[6] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_PIP])
-    landmarks_array[7] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_DIP])
-    landmarks_array[8] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP])
-    landmarks_array[9] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP])
-    landmarks_array[10] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_PIP])
-    landmarks_array[11] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_DIP])
-    landmarks_array[12] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP])
-    landmarks_array[13] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_MCP])
-    landmarks_array[14] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_PIP])
-    landmarks_array[15] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_DIP])
-    landmarks_array[16] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP])
-    landmarks_array[17] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_MCP])
-    landmarks_array[18] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_PIP])
-    landmarks_array[19] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_DIP])
-    landmarks_array[20] = get_landmark(hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP])
-
-    return landmarks_array
-
+    # ghép Left trước, Right sau để nhất quán
+    both = np.hstack((left_arr, right_arr)).flatten()  # (21,4) -> 84
+    return both.astype(float)
 
 def extract_face_result(face_results):
     """
-    Extract features from face result
-    :param face_results from mediapipe
-    :return: features
+    Trả về (x_mean, y_mean) của tất cả landmarks mặt.
+    Nếu không có mặt → zeros(2) để giữ kích thước ổn định.
     """
-    # Get all the features from face results
-    single_face = face_results.multi_face_landmarks[0]
+    if face_results is None or getattr(face_results, "multi_face_landmarks", None) is None:
+        return np.zeros(2, dtype=float)
 
-    # Get all the landmark into a 2-d numpy array
-    face_array = np.array([
-        [lm.x, lm.y] for lm in single_face.landmark
-    ])
+    faces = face_results.multi_face_landmarks
+    if len(faces) == 0 or faces[0] is None:
+        return np.zeros(2, dtype=float)
 
-    # Get the mean
-    return np.mean(face_array, axis=0)
+    face = faces[0]
+    face_xy = np.array([[lm.x, lm.y] for lm in face.landmark], dtype=float)
+    if face_xy.size == 0 or not np.all(np.isfinite(face_xy)):
+        return np.zeros(2, dtype=float)
 
+    return np.mean(face_xy, axis=0)  # (2,)
 
 def extract_features(mp_hands, face_results, hand_results):
     """
-    Combine the results into one single feature array
-    :param mp_hands from mediapipe
-    :param face_results from mediapipe
-    :param hand_results from mediapipe
-    :return: single feature array
+    Hợp nhất: face(2) + hands(84) = 86 chiều
     """
-    face_features = extract_face_result(face_results)
-    hand_features = extract_hand_result(mp_hands, hand_results)
-    return np.hstack((face_features, hand_features))
+    face_features = extract_face_result(face_results)           # (2,)
+    hand_features = extract_hand_result(mp_hands, hand_results) # (84,)
+    feat = np.hstack((face_features, hand_features)).astype(float)
+    return feat

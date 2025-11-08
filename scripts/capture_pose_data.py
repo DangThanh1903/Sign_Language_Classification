@@ -64,13 +64,9 @@ if __name__ == "__main__":
     )
     mp_drawing = mp.solutions.drawing_utils
 
-    valid_count = 0
-    total_count = 0
-    no_face_count = 0
-    last_console_tick = -1
-
-    def _has_face(res):
-        return (res is not None) and getattr(res, "multi_face_landmarks", None)
+    valid_count = 0          # số frame hợp lệ (đã trích feature OK)
+    total_count = 0          # tổng frame đọc được
+    last_console_tick = -1   # log ra console mỗi 1s
 
     while cap.isOpened():
         elapsed = time.time() - start_time
@@ -85,7 +81,7 @@ if __name__ == "__main__":
 
         total_count += 1
 
-        # Lật trước khi trích đặc trưng nếu cần
+        # === Lật trước khi trích đặc trưng nếu cần ===
         if args.mirror in ("process", "both"):
             frame_bgr = cv2.flip(frame_bgr, 1)
 
@@ -96,26 +92,16 @@ if __name__ == "__main__":
         face_results = face_mesh.process(frame_rgb)
         hand_results = hands.process(frame_rgb)
 
-        # Nếu không có mặt → bỏ frame (tránh crash trong extract_features)
-        if not _has_face(face_results):
-            no_face_count += 1
-            feature = None
-        else:
-            # Bọc try/except để không crash nếu utils/feature_extraction gặp case lạ
-            try:
-                feature = extract_features(mp_hands, face_results, hand_results)
-            except Exception:
-                feature = None
-
+        feature = extract_features(mp_hands, face_results, hand_results)
         if feature is not None:
             arr = np.asarray(feature, dtype=float).ravel()
             if arr.size > 0 and np.all(np.isfinite(arr)):
                 pose_data.append(arr)
                 valid_count += 1
 
-        # Vẽ landmarks
+        # Vẽ landmarks (trên RGB → để writeable True + dùng RGB)
         frame_rgb.flags.writeable = True
-        if _has_face(face_results):
+        if face_results and getattr(face_results, "multi_face_landmarks", None):
             for face_landmarks in face_results.multi_face_landmarks:
                 mp_drawing.draw_landmarks(
                     image=frame_rgb,
@@ -134,16 +120,21 @@ if __name__ == "__main__":
                     connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2)
                 )
 
-        # Hiển thị
+        # Chuyển về BGR để hiển thị
         view_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+        # Lật khi hiển thị nếu cần
         if args.mirror == "display":
             view_bgr = cv2.flip(view_bgr, 1)
+        # args.mirror == "both": đã lật ở bước process, hiển thị giữ nguyên
+        # args.mirror == "process": hiển thị đúng ảnh đã dùng để trích đặc trưng (không lật thêm)
+        # args.mirror == "none": không lật gì cả
 
+        # Overlay tiến độ
         remaining = max(0.0, args.duration - elapsed)
         overlay_lines = [
             f"Class: {args.pose_name}",
             f"Frames (valid/total): {valid_count}/{total_count}",
-            f"No-face frames: {no_face_count}",
             f"Elapsed: {elapsed:.1f}s | Remaining: {remaining:.1f}s",
             f"Mirror: {args.mirror} | Press 'q' to stop"
         ]
@@ -151,9 +142,9 @@ if __name__ == "__main__":
         for i, line in enumerate(overlay_lines):
             y = y0 + i * dy
             cv2.putText(view_bgr, line, (12, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)  # viền đen
             cv2.putText(view_bgr, line, (12, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)  # chữ vàng
 
         cv2.imshow('MediaPipe Face and Hand Detection', view_bgr)
 
@@ -162,10 +153,11 @@ if __name__ == "__main__":
         if tick != last_console_tick:
             last_console_tick = tick
             print(f"[{tick:>3}s] valid/total = {valid_count}/{total_count}  "
-                  f"({(valid_count/max(1,total_count))*100:.1f}% valid) | no_face={no_face_count}")
+                  f"({(valid_count/max(1,total_count))*100:.1f}% valid)")
 
+        # Nhấn q để dừng sớm
         if cv2.waitKey(5) & 0xFF == ord('q'):
-            print(f"Stopped by user at {elapsed:.1f}s — valid/total = {valid_count}/{total_count} | no_face={no_face_count}")
+            print(f"Stopped by user at {elapsed:.1f}s — valid/total = {valid_count}/{total_count}")
             break
 
     cap.release()
@@ -179,7 +171,7 @@ if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
     out_path = f"data/{args.pose_name}.npy"
 
-    # Gộp thêm nếu được yêu cầu
+    # Gộp thêm nếu được yêu cầu và file đã tồn tại
     if args.append and os.path.exists(out_path):
         try:
             old = np.load(out_path)

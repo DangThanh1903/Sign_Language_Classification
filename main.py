@@ -220,12 +220,13 @@ class PhraseAssemblerTiming:
     def partial_text(self):
         return detok_vietnamese(self.tokens)
 
-# ================== [SPELLING MODE] ==================
+# ================== [SPELLING MODE] (có dấu mũ ^) ==================
 LABEL_TO_LETTER = {
     **{chr(o): chr(o) for o in range(ord('a'), ord('z')+1)},
     **{chr(o): chr(o) for o in range(ord('A'), ord('Z')+1)},
     "đ": "đ", "Đ": "Đ",
 }
+
 LABEL_TO_TONE = {
     "dau_sac": "sac",
     "dau_huyen": "huyen",
@@ -234,6 +235,7 @@ LABEL_TO_TONE = {
     "dau_nang": "nang",
     "dau_ngang": "ngang",
 }
+
 TONE_MAP = {
     "a": {"sac":"á","huyen":"à","hoi":"ả","nga":"ã","nang":"ạ","ngang":"a"},
     "ă":{"sac":"ắ","huyen":"ằ","hoi":"ẳ","nga":"ẵ","nang":"ặ","ngang":"ă"},
@@ -247,6 +249,13 @@ TONE_MAP = {
     "u": {"sac":"ú","huyen":"ù","hoi":"ủ","nga":"ũ","nang":"ụ","ngang":"u"},
     "ư":{"sac":"ứ","huyen":"ừ","hoi":"ử","nga":"ữ","nang":"ự","ngang":"ư"},
     "y": {"sac":"ý","huyen":"ỳ","hoi":"ỷ","nga":"ỹ","nang":"ỵ","ngang":"y"},
+}
+
+# Dấu mũ '^' → áp cho nguyên âm kế tiếp (a/e/o → â/ê/ô)
+CIRCUMFLEX_MAP = {
+    "a": "â",
+    "e": "ê",
+    "o": "ô",
 }
 VOWEL_PRIORITY = ["a","ă","â","e","ê","o","ô","ơ","ư","i","y"]
 
@@ -272,25 +281,43 @@ def apply_tone_to_word(base_word: str, tone: str) -> str:
     return base_word[:candidate_idx] + rep + base_word[candidate_idx+1:]
 
 class Speller:
+    """
+    Đánh vần từng âm tiết:
+      - Nhận chữ cái (A..Z/đ)
+      - Nhận dấu mũ: "^" (thêm mũ vào nguyên âm kế tiếp)
+      - Nhận dấu thanh (dau_sac, dau_huyen, ...)
+      - 'xoa'/'backspace' để xoá 1 ký tự
+    """
     def __init__(self):
         self.letters = []
         self.pending_tone = "ngang"
+        self.pending_circumflex = False
 
     def feed_label(self, label: str):
         if not label:
             return
         lab = label.strip()
+
         if lab in {"xoa", "backspace"}:
             if self.letters:
                 self.letters.pop()
             return
+
         tone = LABEL_TO_TONE.get(lab)
         if tone:
             self.pending_tone = tone
             return
+
+        if lab == "^":
+            self.pending_circumflex = True
+            return
+
         ch = LABEL_TO_LETTER.get(lab)
         if ch:
+            if self.pending_circumflex and ch.lower() in CIRCUMFLEX_MAP:
+                ch = CIRCUMFLEX_MAP[ch.lower()]
             self.letters.append(ch.lower())
+            self.pending_circumflex = False
 
     def partial_word(self) -> str:
         base = "".join(self.letters)
@@ -300,10 +327,12 @@ class Speller:
         base = "".join(self.letters).strip()
         if not base:
             self.pending_tone = "ngang"
+            self.pending_circumflex = False
             return None
         word = apply_tone_to_word(base, self.pending_tone)
         self.letters.clear()
         self.pending_tone = "ngang"
+        self.pending_circumflex = False
         return word
 
 # ================== MAIN ==================
