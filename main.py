@@ -56,6 +56,17 @@ def play_audio_autoplay(audio_bytes: bytes, mime: str = "audio/mp3", sig: str = 
     """
     components.html(html, height=0)
 
+# ================== Camera helper ==================
+def list_available_cameras(max_devices: int = 10):
+    """Thử mở index 0..max_devices-1 để tìm camera khả dụng."""
+    available = []
+    for i in range(max_devices):
+        cap = cv2.VideoCapture(i)
+        if cap is not None and cap.isOpened():
+            available.append(i)
+            cap.release()
+    return available
+
 # ================== MediaPipe ==================
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
@@ -92,7 +103,6 @@ def safe_extract_features(mp_hands, face_results, hand_results):
 
 # ================== Từ điển & ghép câu ==================
 LEXICON = {
-    # mở rộng theo bộ nhãn của bạn
     "xin_chao": "xin chào",
     "hello": "xin chào",
     "toi": "tôi",
@@ -132,14 +142,8 @@ def detok_vietnamese(tokens):
 
 # ================== Majority vote smoother ==================
 class MajoritySmoother:
-    """
-    Bộ lọc số đông trượt:
-    - Lưu lại N nhãn gần nhất
-    - Trả về nhãn xuất hiện nhiều nhất (ưu tiên nhãn mới nhất khi hoà)
-    """
     def __init__(self, window_size=7):
         self.win = deque(maxlen=max(3, int(window_size)))
-
     def feed(self, label: str) -> str:
         self.win.append(label)
         if len(self.win) == 0:
@@ -157,14 +161,6 @@ class MajoritySmoother:
 
 # ================== Gom từ theo thời gian + chống lặp ==================
 class PhraseAssemblerTiming:
-    """
-    Gom từ theo 'thời gian giữ nhãn' + CHỐNG LẶP:
-    - Chốt từ khi hold ∈ [WORD_MIN_SEC, WORD_MAX_SEC].
-    - Nếu hold > WORD_MAX_SEC -> chốt đúng 1 lần/đợt giữ.
-    - SAME_WORD_COOLDOWN_SEC: chống lặp trong thời gian ngắn.
-    - REENTRY_GAP_SEC: phải rời từ cũ >= gap trước khi cho chốt lại đúng từ đó.
-    - Im lặng ≥ SILENCE_FINALIZE_SEC -> finalize câu.
-    """
     def __init__(self, skip_labels=None, reentry_gap_sec=REENTRY_GAP_DEFAULT_SEC):
         self.tokens = []
         self.skip = set(skip_labels or [])
@@ -184,10 +180,8 @@ class PhraseAssemblerTiming:
     def _can_commit(self, label: str, now_ts: float) -> bool:
         if not label or (label in self.skip):
             return False
-        # cooldown cùng từ
         if (self.last_commit_label == label) and ((now_ts - self.last_commit_time) < SAME_WORD_COOLDOWN_SEC):
             return False
-        # re-entry gap
         last_leave = self.last_leave_ts.get(label, None)
         if last_leave is not None and (now_ts - last_leave) < self.reentry_gap_sec:
             return False
@@ -218,7 +212,6 @@ class PhraseAssemblerTiming:
     def _compress_tail_duplicates(self):
         if not self.tokens:
             return
-        # Nén chuỗi dài ... t t t -> giữ 1 ở đuôi
         while len(self.tokens) >= 2 and self.tokens[-1] == self.tokens[-2]:
             self.tokens.pop()
 
@@ -331,6 +324,14 @@ class Speller:
         self.pending_tone = "ngang"
         return word
 
+# ==== Spelling helper (đặt sau khi định nghĩa LABEL_TO_*) ====
+SPELLING_SPECIAL = {"xoa", "backspace"}
+def is_spelling_label(label: str) -> bool:
+    if not label:
+        return False
+    lab = label.strip()
+    return (lab in LABEL_TO_LETTER) or (lab in LABEL_TO_TONE) or (lab in SPELLING_SPECIAL)
+
 # ================== MAIN ==================
 if __name__ == "__main__":
     st.set_page_config(layout="wide")
@@ -357,6 +358,27 @@ if __name__ == "__main__":
     SMOOTH_WINDOW = st.sidebar.slider("Cửa sổ majority (frame)", min_value=3, max_value=15, value=7, step=2)
     REENTRY_GAP_SEC = st.sidebar.slider("Khoảng rời từ cũ (re-entry gap, giây)", min_value=0.0, max_value=1.0, value=REENTRY_GAP_DEFAULT_SEC, step=0.05)
 
+    # === Nguồn camera ===
+    st.sidebar.subheader("Nguồn camera")
+    if "cam_list" not in st.session_state:
+        st.session_state.cam_list = list_available_cameras(10)
+    if st.sidebar.button("🔄 Quét lại camera"):
+        st.session_state.cam_list = list_available_cameras(10)
+
+    USE_URL = st.sidebar.toggle("Dùng URL/RTSP thay vì index", value=False)
+    CAMERA_URL = ""
+    camera_options = st.session_state.cam_list or [0]
+    if USE_URL:
+        CAMERA_URL = st.sidebar.text_input("Nhập URL/RTSP", value="", placeholder="rtsp://... hoặc http://...")
+        CAMERA_INDEX = None
+    else:
+        CAMERA_INDEX = st.sidebar.selectbox("Chọn camera", options=camera_options, index=0,
+                                            format_func=lambda i: f"Camera {i}")
+        CAMERA_URL = ""
+
+    FRAME_WIDTH  = st.sidebar.number_input("Chiều rộng", min_value=160, max_value=3840, value=640, step=10)
+    FRAME_HEIGHT = st.sidebar.number_input("Chiều cao",  min_value=120, max_value=2160, value=480, step=10)
+
     col1, col2 = st.columns([4, 2])
     with col1:
         video_placeholder = st.empty()
@@ -369,7 +391,22 @@ if __name__ == "__main__":
     if "silence_since" not in st.session_state:
         st.session_state.silence_since = None
 
-    cap = cv2.VideoCapture(0)
+    # Khởi tạo webcam theo lựa chọn
+    if USE_URL and CAMERA_URL.strip():
+        cap = cv2.VideoCapture(CAMERA_URL.strip())
+    else:
+        cap = cv2.VideoCapture(CAMERA_INDEX)
+        # Nếu Windows chập chờn, thử:
+        # cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+
+    # Áp độ phân giải (nếu camera hỗ trợ)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+    if not cap.isOpened():
+        err_src = CAMERA_URL.strip() if (USE_URL and CAMERA_URL.strip()) else f"index {CAMERA_INDEX}"
+        st.error(f"Không mở được camera ({err_src}). Hãy 'Quét lại camera' hoặc đổi lựa chọn.")
+        st.stop()
 
     expression_handler = ExpressionHandler()
 
@@ -403,7 +440,6 @@ if __name__ == "__main__":
     # Trạng thái nhãn ổn định
     current_label = None
     current_since = 0.0
-    last_spoken = None
 
     while cap.isOpened():
         ok, image = cap.read()
@@ -455,12 +491,12 @@ if __name__ == "__main__":
             hold_sec = (now - current_since) if current_since else 0.0
 
             if ENABLE_AUTO_SENTENCE and current_label and (current_label not in DEFAULT_SKIP_LABELS):
-                if ENABLE_SPELLING_MODE:
-                    # Đánh vần: gửi nhãn ổn định vào speller (không commit vào câu ngay)
+                committed = False
+                if ENABLE_SPELLING_MODE and is_spelling_label(current_label):
+                    # chữ/dấu -> vào Speller (không commit vào câu ngay)
                     speller.feed_label(current_label)
-                    committed = False
                 else:
-                    # Dịch từ rời: chốt từ theo thời gian giữ nhãn cũ
+                    # từ/vocab -> commit theo thời gian giữ
                     committed = phrase_timing.commit_word_if_valid(current_label, hold_sec, now)
 
                 # đánh dấu "rời" nhãn cũ & reset overflow flag
@@ -475,20 +511,19 @@ if __name__ == "__main__":
             current_label = norm_label
             current_since = now
 
-            # (tuỳ chọn) đọc từng từ nếu bật và có commit (chỉ áp dụng khi không ở spelling mode)
+            # (tuỳ chọn) đọc từng từ nếu bật và có commit (chỉ khi là 'từ')
             if TTS_WORD_MODE and committed:
-                word_text = normalize_token(current_label)
+                word_text = phrase_timing.tokens[-1] if phrase_timing.tokens else normalize_token(current_label)
                 audio_bytes, mime = tts_bytes_edge(word_text)
                 if audio_bytes:
                     st.session_state.audio_sig += 1
                     play_audio_autoplay(audio_bytes, mime, sig=str(st.session_state.audio_sig))
 
-        # Nếu nhãn không đổi, kiểm tra overflow > WORD_MAX_SEC để chốt 1 lần
+        # Nếu nhãn không đổi, kiểm tra overflow > WORD_MAX_SEC để chốt 1 lần (chỉ với 'từ')
         elapsed = time.time() - current_since if current_since else 0.0
         if ENABLE_AUTO_SENTENCE:
-            if not ENABLE_SPELLING_MODE:
+            if not (ENABLE_SPELLING_MODE and is_spelling_label(current_label or "")):
                 phrase_timing.commit_on_overflow(current_label, elapsed, now)
-            # Spelling mode: không overflow-commit để tránh lặp chữ
 
             # Nếu im lặng đủ lâu -> finalize
             if st.session_state.silence_since is not None:
@@ -546,7 +581,8 @@ if __name__ == "__main__":
 
         # Hiển thị video + nhãn hiện tại (đã smoothing nếu bật)
         video_placeholder.image(image, channels="RGB", use_column_width=True)
-        debug = f"(hold {elapsed:.2f}s) smoothing:{'on' if smoother else 'off'} re-gap:{REENTRY_GAP_SEC:.2f}s spelling:{'on' if ENABLE_SPELLING_MODE else 'off'}"
+        cam_info = CAMERA_URL.strip() if (USE_URL and CAMERA_URL.strip()) else f"idx:{CAMERA_INDEX}"
+        debug = f"(hold {elapsed:.2f}s) cam:{cam_info} smoothing:{'on' if smoother else 'off'} re-gap:{REENTRY_GAP_SEC:.2f}s spelling:{'on' if ENABLE_SPELLING_MODE else 'off'}"
         prediction_placeholder.markdown(
             f'''<h2 class="big-font">{norm_label}</h2><p class="small">{debug}</p>''',
             unsafe_allow_html=True
